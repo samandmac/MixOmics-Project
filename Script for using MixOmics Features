@@ -1,0 +1,906 @@
+#### Sam McAllister Code #####
+#If this was helpful, or parts of the code were used, please acknowledge the source - as it could be considered plagiarism or scientific misconduct
+#Please cite if used.
+
+##### References of code #####
+
+#The packaged used for normalisation of transcriptomic data was DESeq2, the vignette 
+  #for which can be found
+    #https://bioconductor.org/packages/release/bioc/html/DESeq2.html
+
+#mixOmics methods pipelines follow vignette from mixOmics
+  #https://mixomicsteam.github.io/Bookdown/index.html
+
+#Assistance gathered from mixOmics Forums
+  #https://mixomics-users.discourse.group/
+
+#### Extra - Normalisation of Transcriptomic Data ####
+
+#Initially a separate file, I've combined this into mixOmics analyses as it was 
+  #Also performed in R, hopefully this saves some space.
+#To begin with, I took the transcriptomic raw read data and normalised it here in R.
+  #The other omics datasets (metabolomics and proteomics) were separately normalised on
+  #other tools (MetaboAnalyst and Proteome Discoverer, respectively).
+#Here we set a directory to the path where the data files are contained - note that at this
+  #point they are still separate data files per sample of read counts
+    directory <- "C:\\Users\\prope\\Documents\\Bioinformatic Masters\\Dissertation MSc\\Transcriptomics Data\\"
+
+#Here we use grep to grab all the files for each sample type, for instance H = H line
+  #and W = WT samples, in the directory
+    sampleFiles <- grep("H",list.files(directory),value=TRUE)
+    sampleFiles2 <- grep("W",list.files(directory),value=TRUE)
+
+#We combine the two sampleFiles objects into one and establish the phenotype of each
+  #sample
+    sampleFiles <- c(sampleFiles,sampleFiles2)
+    condition <- c('H','H','H','W','W','W')
+
+#We can check it's grabbed the right files
+    sampleFiles
+
+#And then set these into a data frame, containing sample files, their names, 
+  #and the phenotype of the file
+    sampleTable <- data.frame(sampleName = sampleFiles,
+                          fileName = sampleFiles,
+                          condition = condition)
+
+#I use DESeq2 for normalisation - one bad thing about the mixOmics instructions
+  #is they never specify a particular normalisation technique for any omic, so
+  #perhaps the type of normalisation you choose affects the end result.
+    library("DESeq2")
+
+#Luckily, DESeq2 offers a way to establish a DESeq object from the HTseq read counts
+    ddsHTSeq <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable,
+                                       directory = directory,
+                                       design= ~ condition)
+
+#We can look at the dimensions of the datasets before any work is done
+    dim(ddsHTSeq)
+
+#and then remove rows where the values are 0
+    notAllZero <- (rowSums(counts(ddsHTSeq))>0)
+    ddsHTSeq <- ddsHTSeq[notAllZero,]
+
+#And see how many were removed
+    dim(ddsHTSeq)
+
+#this will run differential expression analysis on the data
+    DEobj <- DESeq(ddsHTSeq)
+
+#We could obtain "normalised" reads at this point, but if we decided to plot a histogram we 
+  #would see that the data is not really normalised, so we transform the data with VST
+
+    vsd = varianceStabilizingTransformation(DEobj)
+
+#I checked to see how this would look under PCA to investigate if differences were observed in the
+  #datasets
+    plotPCA(vsd, intgroup = "condition")
+
+#I then use assay to extract normalised values from the vsd object
+    norm <- assay(vsd)
+
+#Save it to a CSV object on my computer
+    write.csv(norm, file = "trans_VST_normalised_counts.csv")
+
+#And plot a histogram to see if it looks normalised
+    hist(norm[,1])
+
+#It looks great, so job done
+
+#### Setting up all datasets in R ####
+
+#Setting the packages up
+  
+  #mixOmics holds the methods used in the paper, (s)PCA, (s)PLS(-DA), DIABLO
+    
+  #caret - preprocessing package
+
+  #ggvenn - package for creating venn diagrams
+  
+    library(mixOmics)
+    library(caret)  #SPLS methods intefer with mixOmics, before using mixOmics
+                    #be sure to detach caret package after preprocessing
+    #library(ggvenn) #used as an extra step in last section, may intefer with
+    #functions in other two packages, so not set at the start
+
+#This is the datasets location,  being read in (I use csv files for all, but
+#mixOmics does allow for txt format too)
+    trans_data <- read.csv("C:\\Users\\prope\\Documents\\Bioinformatic Masters\\Dissertation MSc\\trans_VST_normalised_counts.csv", row.names = 1, header = TRUE)
+    meta_data <- read.csv("C:\\Users\\prope\\Documents\\Bioinformatic Masters\\Dissertation MSc\\1891_metaboanalyst_export.csv", row.names = 1, header = TRUE, stringsAsFactors = FALSE)
+    prot_data <- read.csv("C:\\Users\\prope\\Documents\\Bioinformatic Masters\\Dissertation MSc\\proto_data.csv", row.names = 1, header = TRUE)
+
+
+#### Pre-Processing datasets ####
+
+#See report for more information, but this is just getting the data in the
+  #correct sort of format for mixOmics.
+
+#Meta data must have supernatent data removed, MetaboAnalyst would fill in
+  #missing data where it only exists in supernatent results, thus giving incorrect
+  #results
+
+#This is pre-processing the metabolite data, which has not been normalised yet.
+  #This features the removal of supernatent data and empty columns in the intra-
+  #cellular data. It also features import of the annotated metabolites, so that
+  #only unique identified/annotated peaks can be used in the methods.
+
+    annotated.metabolites <- read.csv("C:\\Users\\prope\\Downloads\\PiMP.csv",row.names = 1, header = TRUE)
+    unique.peaks <- unique(annotated.metabolites$Peak.ID)
+    meta_data <- subset(meta_data, rownames(meta_data) %in% unique.peaks)
+
+#This is the removal of the supernatent data and removal of zero-variance 
+  #predictors from the dataset. Likely due to the group factor being the first 
+  #line in the file, the data is a "character" type, so we switch it to
+  #numeric - note that removal of the group types means it must be added back, it 
+  #is necessary for MetaboAnalyst
+    meta_data <- meta_data[,c(1:6)]
+    meta_data[,1:6] <- sapply(meta_data[, 1:6], as.numeric)
+    meta_data <- t(meta_data)
+    meta_zero_vars <- nearZeroVar(meta_data)
+    meta_data <- meta_data[,-c(meta_zero_vars)]
+    meta_data <- t(meta_data)
+
+#Here the data is saved, for transferring into MetaboAnalyst
+    write.csv(meta_data, file = "C:/Users/prope/Documents/Bioinformatic Masters/Dissertation MSc/R Data/raw_meta_data.csv")
+
+#When normalisation has taken place, the file from MetaboAnalyst is imported
+    meta_data <- read.csv("C:\\Users\\prope\\Documents\\Bioinformatic Masters\\Dissertation MSc\\meta_data_normalized.new.csv", row.names = 1, header = TRUE, stringsAsFactors = FALSE)
+    meta_data <- meta_data[-c(1),]
+    meta_data[,1:6] <- sapply(meta_data[, 1:6], as.numeric)
+
+#For mixomics, the rows and columns must be reversed!
+  #"the numeric data matrix or data frames have n observations or samples in rows 
+  #and p predictors or variables (e.g. genes, proteins, OTUs) in columns."
+  #So we will transpose the data
+    t.trans_data <- t(trans_data)
+    t.meta_data <- t(meta_data)
+    t.prot_data <- t(prot_data)
+
+
+#Making data frames similar with row names for transcriptomic data
+    row.names(t.trans_data) <- c("H1", "H2", "H3", "W1", "W2", "W3")
+#Making data frames similar with row names for metabolic data
+    row.names(t.meta_data) <- c("H1", "H2", "H3", "W1", "W2", "W3")
+#Making data frames similar with row names for proteomic data
+    row.names(t.prot_data) <- c("H1", "H2", "H3", "W1", "W2", "W3")
+
+#I create factors of the datasets here, to combine data into one last where
+  #certain information can be taken out from one place - these assist with supervised methods e.g.
+  #spls(-da) and DIABLO but also for plots to guide group phenotype differences
+    factors <- as.factor(c("H_Line","H_Line","H_Line","Wild_Type","Wild_Type","Wild_Type"))
+    samples <- (c("H1", "H2", "H3", "W1", "W2", "W3"))
+
+#NOTE: some methods in mixOmics don't appreciate having data where var=0, or SD=0,
+  #or scaling has an issue etc etc, so below is a method to remove those
+  #Only asdf3 had nearZeroVars - would need to check for the rest
+    asdf <- as.data.frame(t.meta_data)
+    asdf2 <- as.data.frame(t.trans_data)
+    asdf3 <- as.data.frame(t.prot_data)
+    nearZeroVar(asdf3)
+
+#Only prot data returned nearZeroVar's
+    t.prot_data <- t.prot_data[, -c(nearZeroVar(asdf3))]
+
+#And here is saving the new formats of the data
+    saveRDS(t.trans_data, file = "C:/Users/prope/Documents/Bioinformatic Masters/Dissertation MSc/R Data/t.trans_data_ZV.rds")
+    saveRDS(t.meta_data, file = "C:/Users/prope/Documents/Bioinformatic Masters/Dissertation MSc/R Data/t.meta_data_ZV.rds")
+    saveRDS(t.prot_data, file = "C:/Users/prope/Documents/Bioinformatic Masters/Dissertation MSc/R Data/t.prot_data_ZV.rds")
+
+#Here we can load in the newer datasets that are normalised!
+    t.trans_data <- readRDS("C:/Users/prope/Documents/Bioinformatic Masters/Dissertation MSc/R Data/t.trans_data_ZV.rds", refhook = NULL)
+    t.meta_data <- readRDS("C:/Users/prope/Documents/Bioinformatic Masters/Dissertation MSc/R Data/t.meta_data_ZV.rds", refhook = NULL)
+    t.prot_data <- readRDS("C:/Users/prope/Documents/Bioinformatic Masters/Dissertation MSc/R Data/t.prot_data_ZV.rds", refhook = NULL)
+
+
+#Note: getting rid of high correlated predictors is tricky, as the predictors
+  #all have very high correlation (cutoff = .99+), as such - I've not decided 
+  #whether to keep or remove them. But here is some code to get rid of them.
+#The reason why I choose to keep them is:
+  #Proteomic data - if I choose a threshold below .99999 then nearly all 
+  #predictors are removed, which isn't great. 
+  #The threshold isn't consistent between datasets.
+  #When proteomic data has been left and the others have correlated features
+  #removed, some of the plots produced from these data look very odd 
+  #as compared to normal.
+  
+#But in the interest of explaining what happens - it gets the correlations for 
+  #the dataset, we generate a summary for the correlations, the high correlations are found
+  #and then removed from the dataset
+
+    descrCor <- cor(t.meta_data)
+    summary(descrCor[upper.tri(descrCor)])
+    highlyCorDescr <- findCorrelation(descrCor, cutoff = .95)
+    t.meta_data <- t.meta_data[,-highlyCorDescr]
+    descrCor2 <- cor(t.meta_data)
+    summary(descrCor2[upper.tri(descrCor2)])
+    
+    descrCor <- cor(t.trans_data)
+    summary(descrCor[upper.tri(descrCor)])
+    highlyCorDescr <- findCorrelation(descrCor, cutoff = .99)
+    t.trans_data <- t.trans_data[,-highlyCorDescr]
+    descrCor2 <- cor(t.trans_data)
+    summary(descrCor2[upper.tri(descrCor2)])
+    
+    descrCor <- cor(t.prot_data, use = "complete.obs")
+    summary(descrCor[upper.tri(descrCor)])
+    highlyCorDescr <- findCorrelation(descrCor, cutoff = .99999)
+    t.prot_data <- t.prot_data[,-highlyCorDescr]
+    descrCor2 <- cor(t.prot_data)
+    summary(descrCor2[upper.tri(descrCor2)])
+
+#Finally, caret package must be detached as it masks SPLS and a few other methods
+  #from the mixOmics package.
+    detach("package:caret", unload = TRUE)
+
+
+#### (s)PCA analysis ####
+
+#To identify significant sources of variation in each dataset and identify whether 
+    #these were due to biological conditions or experimental bias, the mixOmics 
+    #method for PCA analysis was used on each dataset. Trends between the samples 
+    #were visually represented to observe if data clustered according to their 
+    #condition. The amount of variance explained per principal component was also 
+    #examined. 
+
+#Note: dev.print prints it to whatever your working directory is, and it's set to a pdf format - it may look
+  #better than the plot version (you can adjust code to save an object of the plot without generating
+  #the plot in R to save memory, I prefer my method as the pdf output tends to look better than R) 
+
+#Remember, can use more components and check for elbow on PlotIndiv!
+  #Running the PCA method
+    pca.trans <- pca(t.trans_data)     
+    pca.meta <- pca(t.meta_data)
+    pca.prot <- pca(t.prot_data)
+
+  #Sample plots
+    plotIndiv(pca.trans, ind.names = FALSE,
+              group = factors,
+              pch = as.factor(samples),
+              legend = TRUE, title = 'Data: transcriptomics, PCA PC 1 & 2',
+              legend.title = 'Condition', legend.title.pch = 'Sample Type')
+    dev.print(pdf, 'trans.pca.indiv.pdf')
+    
+    plotIndiv(pca.meta, ind.names = FALSE,
+              group = factors,
+              pch = as.factor(samples),
+              legend = TRUE, title = 'Data: metabolomics, PCA PC 1 & 2',
+              legend.title = 'Condition', legend.title.pch = 'Sample Type')
+    dev.print(pdf, 'meta.pca.indiv.pdf')
+    
+    plotIndiv(pca.prot, ind.names = FALSE,
+              group = factors,
+              pch = as.factor(samples),
+              legend = TRUE, title = 'Data: proteomics, PCA PC 1 & 2',
+              legend.title = 'Condition', legend.title.pch = 'Sample Type')
+    dev.print(pdf, 'prot.pca.indiv.pdf')
+
+  #Variable plots
+    plotVar(pca.trans, cutoff = 0.8, cex = 3)  
+    dev.print(pdf, 'trans.pca.var.pdf')
+    plotVar(pca.meta, cutoff = 0.8, cex = 3)
+    dev.print(pdf, 'meta.pca.var.pdf')
+    plotVar(pca.prot, cutoff = 0.8, cex = 3)
+    dev.print(pdf, 'prot.pca.var.pdf')
+
+#Tested with 3 components - can choose not to do this, but gives an idea about
+    #options available with mixOmics (i.e. can change variable numbers, components) 
+    #- parameter performance tuning would help choose the optimum number of 
+    #components, but even then the plots don't change with the given parameters.
+
+    pca.trans2 <- pca(t.trans_data, ncomp = 3)
+    plotIndiv(pca.trans2, ind.names = FALSE,
+              group = factors, comp = c(1,3),
+              pch = as.factor(samples),
+              legend = TRUE, title = 'Data: transcriptomics, PCA PC 1 & 3',
+              legend.title = 'Condition', legend.title.pch = 'Sample Type')
+    dev.print(pdf, 'trans.pca.indiv.3comp.pdf')
+    
+    pca.meta2 <- pca(t.meta_data, ncomp = 3)
+    plotIndiv(pca.meta2, ind.names = FALSE,
+              group = factors, comp = c(1,3),
+              pch = as.factor(samples),
+              legend = TRUE, title = 'Data: metabolomics, PCA PC 1 & 3',
+              legend.title = 'Condition', legend.title.pch = 'Sample Type')
+    dev.print(pdf, 'meta.pca.indiv.3comp.pdf')
+    
+    pca.prot2 <- pca(t.prot_data, ncomp = 3)
+    plotIndiv(pca.prot2, ind.names = FALSE,
+              group = factors, comp = c(1,3),
+              pch = as.factor(samples),
+              legend = TRUE, title = 'Data: proteomics, PCA PC 1 & 3',
+              legend.title = 'Condition', legend.title.pch = 'Sample Type')
+    dev.print(pdf, 'prot.pca.indiv.3comp.pdf')
+
+#Variance per component can be explained using a scree plot     
+    plot(pca.trans2)
+    dev.print(pdf, 'trans.pca.comps.pdf')
+    
+    plot(pca.meta2)
+    dev.print(pdf, 'meta.pca.comps.pdf')
+    
+    plot(pca.prot2)
+    dev.print(pdf, 'prot.pca.comps.pdf')
+
+#Which indicates that most of the variance is explained in the 1st component in
+    #all datasets
+
+#However, even though the most variance seems to be explained by component 1, as 
+  #we need 2D plots we should always include 2 components even if 2 components 
+  #does not seem to drastically contribute to remaining variance.
+
+#Variable coefficients can be seen in loadings plots, along with variable names
+  
+#This shows the top 100 predictors for each omics
+    plotLoadings(pca.trans, ndisplay = 100, 
+                 size.name = rel(0.3))
+    dev.print(pdf, 'trans.pca.loadings.pdf')
+    
+    plotLoadings(pca.meta, ndisplay = 100, 
+                 size.name = rel(0.3))
+    dev.print(pdf, 'meta.pca.loadings.pdf')
+    
+    plotLoadings(pca.prot, ndisplay = 100, 
+                 size.name = rel(0.3))
+    dev.print(pdf, 'prot.pca.loadings.pdf')
+
+#Variable selection with sparse PCA
+  #To identify significant sources of variation in each dataset and identify whether
+    #these were due to biological conditions or experimental bias, the mixOmics 
+    #method for PCA analysis was used on each dataset. Trends between the samples 
+    #were visually represented to observe if data clustered according to their 
+    #condition. The amount of variance explained per principal component was also 
+    #examined. 
+
+
+#Can choose the number of variables to select on each PC. Chosen here are 
+  #the top 15 genes for PC1, the top 10 genes for PC2 and the top 5 genes for PC3 
+    
+  #Running the sPCA method
+    spca.trans <- spca(t.trans_data, ncomp = 3, keepX = c(15,10,5))               
+    
+    spca.meta <- spca(t.meta_data, ncomp = 3, keepX = c(15,10,5))
+    
+    spca.prot <- spca(t.prot_data, ncomp = 3, keepX = c(15,10,5))
+
+  #Sample Plots
+    plotIndiv(spca.trans, group = factors,   
+              pch = as.factor(samples),
+              legend = TRUE, title = 'Transcriptomics, sPCA PC 1 & 2',
+              legend.title = 'Condition', legend.title.pch = 'Sample')
+    dev.print(pdf, 'trans.spca.indiv.pdf')
+    
+    plotIndiv(spca.meta, group = factors,   
+              pch = as.factor(samples),
+              legend = TRUE, title = 'Metabolomics, sPCA PC 1 & 2',
+              legend.title = 'Condition', legend.title.pch = 'Sample')
+    dev.print(pdf, 'meta.spca.indiv.pdf')
+    
+    plotIndiv(spca.prot, group = factors,  
+              pch = as.factor(samples),
+              legend = TRUE, title = 'Proteomics, sPCA PC 1 & 2',
+              legend.title = 'Condition', legend.title.pch = 'Sample')
+    dev.print(pdf, 'prot.spca.indiv.pdf')
+
+  #Variable plots
+    plotVar(spca.trans, cex = 3)
+    dev.print(pdf, 'trans.spca.var.pdf')
+    
+    plotVar(spca.meta, cex = 3) 
+    dev.print(pdf, 'meta.spca.var.pdf')
+    
+    plotVar(spca.prot, cex = 3) 
+    dev.print(pdf, 'prot.spca.var.pdf')
+
+#Here we select the most variable coefficients on component 1
+    mostvartrans <- selectVar(spca.trans, comp = 1)$value
+    
+    mostVarMeta <- selectVar(spca.meta, comp = 1)$value
+    
+    mostVarProt <- selectVar(spca.prot, comp = 1)$value
+
+#These were written to a csv file, to highlight selected variables
+    write.csv(mostvartrans, "TransSelectVar.csv")
+    write.csv(mostVarMeta, "MetaSelectVar.csv")
+    write.csv(mostVarProt, "ProtSelectVar.csv")
+
+#Coefficients are just the loading weights, of which the absolute value 
+  #gives the variables importance in explaining variance in the first component 
+
+#A loadings plot is just a fancy way of showing the same information, and gives
+  #the variable name that is responsible for driving variation (in order of
+  #absolute coefficient) 
+    plotLoadings(spca.trans, comp=1)
+    dev.print(pdf, 'trans.spca.loadings.pdf')
+    
+    plotLoadings(spca.meta, comp=1)
+    dev.print(pdf, 'meta.spca.loadings.pdf')
+    
+    plotLoadings(spca.prot, comp=1)
+    dev.print(pdf, 'prot.spca.loadings.pdf')
+
+#Tuning parameters
+
+#For (s)PCA we decide on parameters for:
+  #Number of components
+  #Number of variables to select on each component
+
+#tune.pca calculates the % of variance explained in each component, up to the 
+  #minimum between the number of rows, or column in the data set. An elbow appears 
+  #on the screeplot indicates the component number to select. 
+  #In our results, the first component usually explains most variance (again, we 
+  #need 2 components for plots anyway, but for proteomic and metabolomic datasets 
+  #2-3 components explain a bit more variance, it all 
+  #depends on how you define the elbow for your plots) - so the values we have 
+  #used for our analysis are fine.
+
+    tune.pca.trans <- tune.spca(t.trans_data)
+    plot(tune.pca.trans)
+    dev.print(pdf, 'trans.spca.tuning.pdf')
+    
+    tune.pca.meta <- tune.pca(t.meta_data)
+    plot(tune.pca.meta)
+    dev.print(pdf, 'meta.spca.tuning.pdf')
+    
+    tune.pca.prot <- tune.pca(t.prot_data)
+    plot(tune.pca.prot)
+    dev.print(pdf, 'prot.spca.tuning.pdf')
+
+#The number of variables to select is arbitrary for sPCA, as it is an exploratory
+  #method
+
+
+#### sPLS-DA analysis ####
+
+#To sort samples into known groups and predict classes of new samples, while 
+  #identifying key variables driving discrimination, sparse PLS-DA (sPLS-DA) 
+  #analysis was performed on each dataset.
+
+#We only use splsda because "Please note that logistic regression is a form of 
+  #linear regression, and hence not a suitable method when the variables are highly 
+  #correlated, whereas (s)plsda models are highly robust even with highly collinear 
+  #variables." You can still perform PLS-DA without variable selection, but given 
+  #the small sample size I was advised to try it with sPLS-DA 
+
+#The number of variables to select is completely arbitrary.
+
+  #Method for sPLS-DA
+    MyResult.splsda.trans <- splsda(t.trans_data, factors, keepX = c(50,50)) 
+    MyResult.splsda.meta <- splsda(t.meta_data, factors, keepX = c(50,50))
+    MyResult.splsda.prot <- splsda(t.prot_data, factors, keepX = c(50,50))
+
+  #Sample plots
+    plotIndiv(MyResult.splsda.trans, title = "Data: transcriptomics, SPLS-DA comp 1-2", ind.names = FALSE,
+              group = factors,
+              pch = as.factor(samples),
+              legend = TRUE,
+              legend.title = 'Condition', legend.title.pch = 'Sample Type')   
+    dev.print(pdf, 'trans.splsda.indiv50x50.pdf')
+    
+    plotIndiv(MyResult.splsda.meta, title = "Data: metabolomics, SPLS-DA comp 1-2", ind.names = FALSE,
+              group = factors,
+              pch = as.factor(samples),
+              legend = TRUE,
+              legend.title = 'Condition', legend.title.pch = 'Sample Type')
+    dev.print(pdf, 'meta.splsda.indiv50x50.pdf')
+    
+    plotIndiv(MyResult.splsda.prot, title = "Data: proteomics, SPLS-DA comp 1-2", ind.names = FALSE,
+              group = factors,
+              pch = as.factor(samples),
+              legend = TRUE,
+              legend.title = 'Condition', legend.title.pch = 'Sample Type')
+    dev.print(pdf, 'prot.splsda.indiv50x50.pdf')
+
+  #Variable Plots
+    plotVar(MyResult.splsda.trans, cex = 3)
+    dev.print(pdf, 'trans.splsda.var50x50.pdf')
+    
+    plotVar(MyResult.splsda.meta, cex = 3)
+    dev.print(pdf, 'meta.splsda.var50x50.pdf')
+    
+    plotVar(MyResult.splsda.prot, cex = 3)
+    dev.print(pdf, 'trans.splsda.var50x50.pdf')
+
+#Selection of variables driving discrimination of phenotypes on comp 1
+    mostvartrans <- selectVar(MyResult.splsda.trans, comp=1)$value   
+    
+    mostVarMeta <- selectVar(MyResult.splsda.meta, comp=1)$value
+    
+    mostVarProt <- selectVar(MyResult.splsda.prot, comp=1)$value
+
+#And again writing the selected variables to a csv file
+    write.csv(mostvartrans, "TransSelectVarsplsda.csv")
+    write.csv(mostVarMeta, "MetaSelectVarsplsda.csv")
+    write.csv(mostVarProt, "ProtSelectVarsplsda.csv")
+
+#In plotIndiv axis labels indicate the amount of variation explained 
+  #per component. sPLS-DA maximises covariance between the dataset and the dummy, not 
+  #the variance of the dataset like PCA
+
+#Customising the sample plots to remove the sample names and show 95% confidence
+  #circle
+    plotIndiv(MyResult.splsda.trans, ind.names = FALSE, legend=TRUE,
+              ellipse = TRUE, star = TRUE, title = 'sPLS-DA Trans',
+              )
+    
+    plotIndiv(MyResult.splsda.meta, ind.names = FALSE, legend=TRUE,
+              ellipse = TRUE, star = TRUE, title = 'sPLS-DA Meta',
+             )
+    
+    plotIndiv(MyResult.splsda.prot, ind.names = FALSE, legend=TRUE,
+              ellipse = TRUE, star = TRUE, title = 'sPLS-DA Prot',
+              )
+
+#Performance tuning
+
+#In sPLS-DA we need to select for:
+
+  #Number of components - usually K-1 where K is the number of classes
+    
+  #Number of variables, "keepX", to select on each component
+
+  #Prediction distance to evaluate the classification and prediction 
+    #performance of sPLS-DA.
+
+#For components use perf to evaluate performance of your method for a larger number of 
+  #components, using repeated k-fold cross-validation. For example here we use 
+  #loocv, as it was recommended with small sample sizes, however, note that 
+  #repeated performance checks cannot be performed with this method - but granted, 
+  #even with mfolds it sometimes doesn't work with the dataset, or generates the 
+  #same sort of plot:
+
+    splsda.trans2 <- splsda(t.trans_data,factors, ncomp=4)
+    
+    splsda.meta2 <- splsda(t.meta_data,factors, ncomp=4)
+    
+    splsda.prot2 <- splsda(t.prot_data,factors, ncomp=4)
+    
+    splsda.trans <- perf(splsda.trans2, validation = "loo",dist = c("max.dist","centroids.dist"), 
+                               progressBar = FALSE, nrepeat = 1) 
+    
+    splsda.meta <- perf(splsda.meta2, validation = "loo",dist = c("max.dist","centroids.dist"), 
+                              progressBar = FALSE, nrepeat = 1) 
+    
+    splsda.prot <- perf(splsda.prot2, validation = "loo",dist = c("max.dist","centroids.dist"), 
+                              progressBar = FALSE, nrepeat = 1) 
+
+#Still only generates a classification error rate of 0.0 for our datasets.
+
+#Plotting the perf will output classification error rate plotswhere the best 
+  #performing component will have the lowest error rate.
+    plot(splsda.trans, sd = TRUE, legend.position = 
+           "horizontal")
+    
+    plot(splsda.meta, sd = TRUE, legend.position = 
+           "horizontal")
+    
+    plot(splsda.prot, sd = TRUE, legend.position = 
+           "horizontal")
+
+#For selecting variables use tune.splsda to find the optimal number of 
+  #variables. The keepX values are arbitrary and will be assessed on each component 
+  #at a time. Similar to above we tried loocv which works and recommends a variable 
+  #size of 5 for each component.
+
+    list.keepX <- c(5:10,  seq(20, 100, 10))
+    
+    tune.splsda.trans <- tune.splsda(t.trans_data, factors, ncomp = 2, 
+                                     validation = 'loo',
+                                     dist = 'max.dist', progressBar = FALSE,
+                                     measure = "overall", test.keepX = list.keepX,
+                                     nrepeat = 1) 
+    
+    tune.splsda.prot <- tune.splsda(t.prot_data, factors, ncomp = 2, 
+                                    validation = 'loo',
+                                    dist = 'max.dist', progressBar = FALSE,
+                                    measure = "overall", test.keepX = list.keepX,
+                                    nrepeat = 1)   
+    
+    tune.splsda.meta <- tune.splsda(t.meta_data, factors, ncomp = 2,
+                                    validation = 'loo',
+                                    dist = 'max.dist', progressBar = FALSE,
+                                    measure = "overall", test.keepX = list.keepX,
+                                    nrepeat = 1)   
+
+#For our results with LOOCV, you cannot repeat the method. So you can't test for
+  #improvement, and therefore have to rely on the ncomp value given from perf - 
+  #which of course doesn't work for our dataset (or rather, the plot is weird)
+
+#But here, we have grabbed the optimum number of variables to select from that 
+  #performance check - which was about 5 on 2 components
+
+    select.keepX.trans <- tune.splsda.trans$choice.keepX[1:2]  
+    select.keepX.trans
+    
+    select.keepX.meta <- tune.splsda.meta$choice.keepX[1:2] 
+    select.keepX.meta
+    
+    select.keepX.prot <- tune.splsda.prot$choice.keepX[1:2] 
+    select.keepX.prot
+
+#After obtaining tuning results, the sPLS-DA model can be run again with these tuned values
+  #Again, changed components to ncomp=2 for our measures, but if perf ever works,
+  #you can get it to run with this by changing ncomp= to whatever your perf is 
+  #called.
+
+#The new performance tuned splsda methods
+    MyResult.splsda.final.trans <- splsda(t.trans_data, factors, ncomp = 2, keepX = select.keepX.trans)
+    
+    MyResult.splsda.final.meta <- splsda(t.meta_data, factors, ncomp = 2, keepX = select.keepX.meta)
+    
+    MyResult.splsda.final.prot <- splsda(t.prot_data, factors, ncomp = 2, keepX = select.keepX.prot)
+
+#Although it "recommends" 1 component, we still plot it out on ncomp=2 to obtain 2D
+  #graphical plots!
+
+#Sample plots of the tuned methods
+    plotIndiv(MyResult.splsda.final.trans, ind.names = FALSE, legend=TRUE,
+              ellipse = TRUE, title="sPLS-DA - Trans Tuned PC1 & 2")
+    dev.print(pdf, 'trans.splsda.indiv5x5.pdf')
+    
+    plotIndiv(MyResult.splsda.final.meta, ind.names = FALSE, legend=TRUE,
+              ellipse = TRUE, title="sPLS-DA - Meta Tuned PC1 & 2", comp = c(1,2))
+    dev.print(pdf, 'meta.splsda.indiv5x5.pdf')
+    
+    plotIndiv(MyResult.splsda.final.prot, ind.names = FALSE, legend=TRUE,
+              ellipse = TRUE, title="sPLS-DA - Prot Tuned PC1 & 2", comp = c(1,2))
+    dev.print(pdf, 'prot.splsda.indiv5x5.pdf')
+
+#Variable plots of the tuned methods
+    plotVar(MyResult.splsda.final.trans, cex = 3)
+    dev.print(pdf, 'trans.splsda.var5x5.pdf')
+    
+    plotVar(MyResult.splsda.final.meta, cex = 3)
+    dev.print(pdf, 'meta.splsda.var5x5.pdf')
+    
+    plotVar(MyResult.splsda.final.prot, cex = 3)
+    dev.print(pdf, 'prot.splsda.var5x5.pdf')
+
+#These look pretty uninformative with such a low number of components, so I stick
+  #with exploratory analysis as they are uninformative - so the variable number
+  #is usually arbitrary.
+    
+#Regardless of components chosen it still converages on the same answer for 
+  #correlation in var! Must mean the most variance is explained in comp 1.
+
+
+#### sPLS analysis ####
+
+#Before integrating all datasets at once, it was advised by the mixOmics team that 
+  #preliminary integration of two separate omics datasets, measured on the same 
+  #samples, should be performed prior to DIABLO. Using sPLS, correlated information 
+  #could be extracted from these integrations or commonalities between datasets 
+  #could be highlighted.
+
+
+#Trans and Meta integration
+    #SPLS method 
+    MyResult.spls.trans.meta <- spls(t.trans_data,t.meta_data, keepX = c(25, 25), keepY = c(25,25))  
+
+
+#Trans and Prot integration
+    #SPLS METHOD
+    MyResult.spls.trans.prot <- spls(t.trans_data,t.prot_data, keepX = c(25, 25), keepY = c(25,25))  
+ 
+
+#Meta and Prot integration
+    #SPLS METHOD
+    MyResult.spls.meta.prot <- spls(t.meta_data,t.prot_data, keepX = c(25, 25), keepY = c(25,25))  
+
+#For the indiv plots as an average, will save a lot of space for final plots
+    #Trans meta
+    plotIndiv(MyResult.spls.trans.meta, ind.names = FALSE,
+              group = factors,
+              pch = as.factor(samples),
+              legend = TRUE,
+              legend.title = 'Condition', legend.title.pch = 'Sample Type',
+              rep.space = "XY-variate", 
+              title = 'Trans & Meta: sPLS')
+    
+    dev.print(pdf, 'trans_meta.spls.indivComb.pdf')
+    
+    #Trans prot
+    plotIndiv(MyResult.spls.trans.prot, ind.names = FALSE,
+              group = factors,
+              pch = as.factor(samples),
+              legend = TRUE,
+              legend.title = 'Condition', legend.title.pch = 'Sample Type',
+              rep.space = "XY-variate",
+              title = 'Trans & Prot: sPLS')
+    
+    dev.print(pdf, 'trans_prot.spls.indivComb.pdf')
+    
+    #Meta prot
+    plotIndiv(MyResult.spls.meta.prot, ind.names = FALSE,
+              group = factors,
+              pch = as.factor(samples),
+              legend = TRUE,
+              legend.title = 'Condition', legend.title.pch = 'Sample Type',
+              rep.space = "XY-variate",
+              title = 'Meta & Prot: sPLS')
+    
+    dev.print(pdf, 'meta_prot.spls.indivComb.pdf')
+    
+    
+#Variable plots
+    plotVar(MyResult.spls.trans.meta, cex=c(3,2), legend = TRUE)
+    dev.print(pdf, 'trans_meta.spls.var.pdf')
+    
+    plotVar(MyResult.spls.trans.prot, cex=c(3,2), legend = TRUE)
+    dev.print(pdf, 'trans_prot.spls.var.pdf')
+    
+    plotVar(MyResult.spls.meta.prot, cex=c(3,2), legend = TRUE)
+    dev.print(pdf, 'meta_prot.spls.var.pdf')
+
+
+#Selected variable list
+
+#Selected variables are found using selectVar, and can be saved into a separate list in the working directory.
+    MySelectedVariables.trans.meta <- selectVar(MyResult.spls.trans.meta, comp = 1)
+    trans_meta_selecvar <- c(MySelectedVariables.trans.meta$X,MySelectedVariables.trans.meta$Y)
+    
+    MySelectedVariables.trans.prot <- selectVar(MyResult.spls.trans.prot, comp = 1)
+    trans_prot_selecvar <- c(MySelectedVariables.trans.prot$X,MySelectedVariables.trans.prot$Y)
+    
+    
+    MySelectedVariables.meta.prot <- selectVar(MyResult.spls.meta.prot, comp = 1)
+    meta_prot_selecvar <- c(MySelectedVariables.meta.prot$X,MySelectedVariables.meta.prot$Y)
+
+#Write selected variables from each integration to csv file
+    write.csv(trans_meta_selecvar, "TransMetaSelectVarspls.csv")
+    write.csv(trans_prot_selecvar, "TransProtSelectVarspls.csv")
+    write.csv(meta_prot_selecvar, "MetaProtSelectVarspls.csv")
+
+
+#Loadings plots show coefficients for each selected variable, along with their identity.
+    plotLoadings(MyResult.spls.trans.meta, comp = 1, size.name = rel(0.5))
+    dev.print(pdf, 'trans_meta.spls.loadings.pdf')
+    
+    plotLoadings(MyResult.spls.trans.prot, comp = 1, size.name = rel(0.5))
+    dev.print(pdf, 'trans_prot.spls.loadings.pdf')
+    
+    plotLoadings(MyResult.spls.meta.prot, comp = 1, size.name = rel(0.5))
+    dev.print(pdf, 'meta_prot.spls.loadings.pdf')
+
+#Performance tuning didn't work with our datasets, and indeed didn't work with
+  #example datasets, see discussion section of report for more details
+
+#### DIABLO analysis ####
+    
+#DIABLO is the  framework in mixOmics that extends PLS for multiple data sets 
+  #integration and PLS-discriminant analysis. 
+
+# I use DIABLO to identify a highly correlated multi-omics signature discriminating 
+  #known groups of samples using a framework that extends Projection to Latent Structures 
+  #(PLS) methods for multiple dataset integration and PLS-discriminant analysis. 
+
+#Integration with sparse methods allows identification of correlated variables 
+  #from the different omics datasets in a supervised manner since we know the phenotype
+  #and can use this to explain differences between the outcomes.
+
+#The input data can be a list of data matrices with n samples which can have different 
+  #numbers of predictors. Y should be a factor vector indicating each samples class 
+  #which is coded as a dummy matrix. Consistent naming of samples should occur in 
+  #all matrices so that they correspond to the keepX parameter.
+
+#Produced from running block.splsda on the dataset are latent variables (components) 
+  #associated with each dataset. DIABLO also generates loading vector coefficients 
+  #for each variable which contribute to defining each component. Coefficients associated 
+  #to a variable give indication as to the variables’ importance in DIABLO. By maximising 
+  #the covariance between linear combinations of the variables from the data matrices and 
+  #the dummy matrix, loading vectors are obtained. The final output is a selection of 
+  #variables from each dataset that is associated with each component chosen.
+
+#Here I make a list object, containing the datasets for transcriptomics, metabolomics,
+    #and proteomics. This is the X value, funnily enough.
+    X <- list(trans = t.trans_data, 
+              meta = t.meta_data, 
+              prot = t.prot_data)
+    
+#And here we use the factors vector, which up till now had been used to identify
+  #phenotype of samples (apart from in SPLS(-DA), where the supervised methods
+  #help by linking it to a dummy matrix, like what happens in DIABLO)
+    Y <- factors
+
+#The number of selected variables to keep is pretty arbitrary, 15 seems like a 
+  #good balance to me if the performance tuning doesn't work, but you can choose
+  # more which will give a longer list at the end.
+    list.keepX <- list(trans = c(15, 15), meta = c(15,15), prot = c(15, 15))
+
+#DIABLO method is run here
+    result.diablo <- block.splsda(X, Y, keepX=list.keepX, ncomp = 2)
+
+#Sample plots are generated
+    plotIndiv(result.diablo, ind.names = FALSE,
+              group = factors,
+              pch = as.factor(samples),
+              legend = TRUE,
+              legend.title = 'Condition', legend.title.pch = 'Sample Type',
+              title = 'H vs WT - DIABLO')
+
+    dev.print(pdf, 'diablo.indiv.pdf')
+
+#Variable plots are generated, I've removed the variable names in this case because
+  #correlation is high enough that they all overlap and cluster
+    plotVar(result.diablo, legend = TRUE, var.names = FALSE)
+
+    dev.print(pdf, 'diablo.var.pdf')
+
+#plotDiablo
+  #Diagnostic plot to check whether correlation between components from each 
+  #dataset has been maximised (Transcriptomics, Metabolomics, Proteomics). This 
+  #diagram shows correlation based only on PC1. Legend indicates the condition of 
+  #the samples. Circles demonstrate a range of 95% confidence. 
+
+    plotDiablo(result.diablo, ncomp = 1 )
+    dev.print(pdf, 'diablo.plotDiablo.pdf')
+
+#circosPlot
+  #The circos plot demonstrates correlations between variables of the omics. 
+
+    circosPlot(result.diablo, cutoff=0.85, size.variables = 0.5)
+    dev.print(pdf, 'diablo.circos.pdf')
+
+#cimDiablo
+  #Shows multi-omics molecular signature expression (represented by the colour key) 
+  #for each sample 
+    cimDiablo(result.diablo, color.blocks = c('darkorchid', 'brown1', 'lightgreen')
+              , comp = 1, margin=c(8,20), legend.position = "right")
+    dev.print(pdf, 'diablo.cimDIABLO.pdf')
+
+
+#plotLoadings
+  #Visualises the loadings weight of selected variables on PC1 (comp 1) from each dataset 
+    plotLoadings(result.diablo, contrib = "max")
+    dev.print(pdf, 'diablo.loadingscomp1.pdf')
+
+#Relevance networks
+  #Highlights correlations between selected variables of differing datasets, which
+    #can be exported to cytoscape
+
+#This method will let you save it and export it for Cytoscape manipulation
+    DIABLOnetwork <- network(result.diablo, blocks = c(1,2,3),
+                         color.node = c('darkorchid', 'brown1', 'lightgreen'), 
+                         cutoff = 0.85)
+#We load igraph for this
+    library(igraph)
+
+#Then we write the graph to a graphml format file, which can be loaded into 
+  #cytoscape
+    write.graph(network$gR, file = "network.graphml",format = "graphml")
+
+#And detach the package so we don't have lost functions
+    detach("package:igraph", unload = TRUE)
+
+#Selecting the variables from the DIABLO analysis as well
+    selectedVars <- selectVar(result.diablo)
+    selectedVars <- c(selectedVars$trans, selectedVars$meta, selectedVars$prot)
+
+#We then write them as a csv file
+    write.csv(selectedVars, "selectVarsDiablo.csv")
+    write.csv(selectedVars$meta, "MetaSelectedVarsDiablo.csv")
+    write.csv(selectedVars$prot, "ProtSelectedVarsDiablo.csv")
+
+#Again, performance testing doesn't work with our dataset, and if you change 
+  #the design matrix its the same end result. See discussion in report for more 
+  #details
+
+#I will include the performance tuning step though
+    sgccda.res = block.splsda(X = X, Y = Y, ncomp = 2 )
+    perf.diablo = perf(sgccda.res, validation = 'loo')
+    plot(perf.diablo) 
+
+#This is the tuning step, suggested too low a number of variables for meaningful
+  #results
+    test.keepX = list (trans = c(5:9, seq(10, 18, 2), seq(20,30,5)),
+                   meta = c(5:9, seq(10, 18, 2), seq(20,30,5)),
+                   prot = c(5:9, seq(10, 18, 2), seq(20,30,5)))
+
+    tune.TCGA = tune.block.splsda(X = X, Y = Y, ncomp = 2, 
+                              test.keepX = test.keepX, design = MyDesign,
+                              validation = 'loo', nrepeat = 1,
+                              dist = "centroids.dist")
+
+    list.keepX = tune.TCGA$choice.keepX
+    list.keepX
+    
+#### The end of mixOmics analyses ####
